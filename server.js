@@ -19,20 +19,14 @@ const httpServer = createServer(app);
 const allowedOrigins = [
   'http://localhost:3000',
   'http://localhost:5173',
+  'http://localhost:5174',
+  'http://localhost:5175',
   'https://focasedutechhand.netlify.app',
   'https://student-dashboard-blue-nu.vercel.app',
   process.env.FRONTEND_URL
 ].filter(Boolean);
 
-// ─── Socket.io ──────────────────────────────────────────────────
-const io = new Server(httpServer, {
-  cors: {
-    origin: allowedOrigins,
-    credentials: true
-  }
-});
-
-// ─── JSON Logger ───────────────────────────────────────────────
+// ─── JSON Logger ────────────────────────────────────────────────
 const log = (type, data) => {
   console.log(JSON.stringify({
     type,
@@ -41,10 +35,13 @@ const log = (type, data) => {
   }));
 };
 
-// ─── CORS ───────────────────────────────────────────────────────
-app.use(cors({
+// ─── CORS Config ────────────────────────────────────────────────
+const corsOptions = {
   origin: (origin, callback) => {
-    if (!origin || allowedOrigins.includes(origin)) {
+    // allow requests with no origin (mobile apps, curl, postman)
+    if (!origin) return callback(null, true);
+
+    if (allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
       log('CORS_BLOCKED', { origin });
@@ -52,16 +49,27 @@ app.use(cors({
     }
   },
   credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
-}));
+};
 
-// ─── Middleware ─────────────────────────────────────────────────
+// ─── Socket.io ──────────────────────────────────────────────────
+const io = new Server(httpServer, {
+  cors: {
+    origin: allowedOrigins,
+    credentials: true,
+    methods: ['GET', 'POST']
+  }
+});
+
+// ─── Middleware (ORDER MATTERS) ──────────────────────────────────
 app.use(helmet());
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions)); // ✅ handle preflight for all routes
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// ─── Request Logger Middleware ──────────────────────────────────
+// ─── Request Logger Middleware ───────────────────────────────────
 app.use((req, res, next) => {
   const start = Date.now();
 
@@ -82,7 +90,7 @@ app.use((req, res, next) => {
   next();
 });
 
-// ─── Rate Limiting ──────────────────────────────────────────────
+// ─── Rate Limiting ───────────────────────────────────────────────
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 100,
@@ -97,7 +105,7 @@ const limiter = rateLimit({
 });
 app.use('/api/', limiter);
 
-// ─── MongoDB Connection ─────────────────────────────────────────
+// ─── MongoDB Connection ──────────────────────────────────────────
 mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/exam-portal', {
   useNewUrlParser: true,
   useUnifiedTopology: true
@@ -112,13 +120,14 @@ mongoose.connection.on('reconnected', () =>
   log('DB_EVENT', { status: 'reconnected', db: 'MongoDB' })
 );
 
-// ─── Root Route ─────────────────────────────────────────────────
+// ─── Root Route ──────────────────────────────────────────────────
 app.get('/', (req, res) => {
   res.json({
     status: 'success',
     message: 'Server is running',
     timestamp: new Date().toISOString(),
     version: '1.0.0',
+    allowed_origins: allowedOrigins,
     endpoints: {
       auth: '/api/auth',
       exams: '/api/exams',
@@ -128,20 +137,25 @@ app.get('/', (req, res) => {
   });
 });
 
-// ─── Routes ─────────────────────────────────────────────────────
+// ─── Routes ──────────────────────────────────────────────────────
 app.use('/api/auth', authRoutes);
 app.use('/api/exams', examRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/users', userRoutes);
 
-// ─── 404 Handler ────────────────────────────────────────────────
+// ─── 404 Handler ─────────────────────────────────────────────────
 app.use((req, res) => {
   log('NOT_FOUND', { method: req.method, url: req.originalUrl, ip: req.ip });
   res.status(404).json({ error: 'Route not found' });
 });
 
-// ─── Global Error Handler ───────────────────────────────────────
+// ─── Global Error Handler ────────────────────────────────────────
 app.use((err, req, res, next) => {
+  // CORS error
+  if (err.message && err.message.startsWith('CORS blocked')) {
+    return res.status(403).json({ error: err.message });
+  }
+
   log('SERVER_ERROR', {
     method: req.method,
     url: req.originalUrl,
@@ -151,7 +165,7 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: 'Internal server error' });
 });
 
-// ─── Socket.io Events ───────────────────────────────────────────
+// ─── Socket.io Events ────────────────────────────────────────────
 io.on('connection', (socket) => {
   log('SOCKET_CONNECT', { socket_id: socket.id, ip: socket.handshake.address });
 
@@ -191,7 +205,7 @@ io.on('connection', (socket) => {
   });
 });
 
-// ─── Server Start ────────────────────────────────────────────────
+// ─── Server Start ─────────────────────────────────────────────────
 const PORT = process.env.PORT || 5000;
 httpServer.listen(PORT, () => {
   log('SERVER_START', {
