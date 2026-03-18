@@ -19,6 +19,7 @@ const httpServer = createServer(app);
 const allowedOrigins = [
   'http://localhost:3000',
   'http://localhost:5173',
+  'https://student-dashboard-blue-nu.vercel.app',
   process.env.FRONTEND_URL
 ].filter(Boolean);
 
