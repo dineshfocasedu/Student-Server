@@ -14,9 +14,18 @@ const userRoutes = require('./routes/user');
 
 const app = express();
 const httpServer = createServer(app);
+
+// ─── Allowed Origins ────────────────────────────────────────────
+const allowedOrigins = [
+  'http://localhost:3000',
+  'http://localhost:5173',
+  process.env.FRONTEND_URL
+].filter(Boolean);
+
+// ─── Socket.io ──────────────────────────────────────────────────
 const io = new Server(httpServer, {
   cors: {
-    origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+    origin: allowedOrigins,
     credentials: true
   }
 });
@@ -30,9 +39,23 @@ const log = (type, data) => {
   }));
 };
 
+// ─── CORS ───────────────────────────────────────────────────────
+app.use(cors({
+  origin: (origin, callback) => {
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      log('CORS_BLOCKED', { origin });
+      callback(new Error(`CORS blocked: ${origin}`));
+    }
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+
 // ─── Middleware ─────────────────────────────────────────────────
 app.use(helmet());
-app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
@@ -47,9 +70,10 @@ app.use((req, res, next) => {
       status: res.statusCode,
       duration_ms: Date.now() - start,
       ip: req.ip,
+      origin: req.get('Origin') || null,
       user_agent: req.get('User-Agent') || null,
       content_type: req.get('Content-Type') || null,
-      response_size: res.get('Content-Length') || null,
+      response_size: res.get('Content-Length') || null
     });
   });
 
@@ -86,13 +110,7 @@ mongoose.connection.on('reconnected', () =>
   log('DB_EVENT', { status: 'reconnected', db: 'MongoDB' })
 );
 
-// ─── Routes ─────────────────────────────────────────────────────
-app.use('/api/auth', authRoutes);
-app.use('/api/exams', examRoutes);
-app.use('/api/admin', adminRoutes);
-app.use('/api/users', userRoutes);
-
-// Add this BEFORE your 404 handler
+// ─── Root Route ─────────────────────────────────────────────────
 app.get('/', (req, res) => {
   res.json({
     status: 'success',
@@ -107,6 +125,12 @@ app.get('/', (req, res) => {
     }
   });
 });
+
+// ─── Routes ─────────────────────────────────────────────────────
+app.use('/api/auth', authRoutes);
+app.use('/api/exams', examRoutes);
+app.use('/api/admin', adminRoutes);
+app.use('/api/users', userRoutes);
 
 // ─── 404 Handler ────────────────────────────────────────────────
 app.use((req, res) => {
@@ -125,7 +149,7 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: 'Internal server error' });
 });
 
-// ─── Socket.io ──────────────────────────────────────────────────
+// ─── Socket.io Events ───────────────────────────────────────────
 io.on('connection', (socket) => {
   log('SOCKET_CONNECT', { socket_id: socket.id, ip: socket.handshake.address });
 
@@ -141,9 +165,9 @@ io.on('connection', (socket) => {
     io.to(`exam-${data.examId}`).emit('student-violation', data);
   });
 
-  socket.on('webcam-frame', ({ examId, userId }) => {
+  socket.on('webcam-frame', ({ examId, userId, frame }) => {
     log('SOCKET_EVENT', { event: 'webcam-frame', socket_id: socket.id, examId, userId });
-    // frame not logged to avoid large payloads
+    io.to(`monitor-${examId}`).emit('student-frame', { userId, frame });
   });
 
   socket.on('join-monitor', ({ examId }) => {
@@ -168,5 +192,10 @@ io.on('connection', (socket) => {
 // ─── Server Start ────────────────────────────────────────────────
 const PORT = process.env.PORT || 5000;
 httpServer.listen(PORT, () => {
-  log('SERVER_START', { status: 'running', port: PORT, env: process.env.NODE_ENV || 'development' });
+  log('SERVER_START', {
+    status: 'running',
+    port: PORT,
+    env: process.env.NODE_ENV || 'development',
+    allowed_origins: allowedOrigins
+  });
 });
